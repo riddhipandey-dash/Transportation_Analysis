@@ -1,3 +1,4 @@
+from difflib import get_close_matches
 import re
 from pathlib import Path
 
@@ -9,6 +10,63 @@ DATA_PATH = Path(__file__).parent / "VEETADAY 2025 TRANSPORATION RECORD.xlsx"
 
 # City keyword to state mapping (uppercase keys for match).
 CITY_STATE = {
+                # User-provided unknown stations
+                "BHARATPUR+HINDUN CITY": "Rajasthan",
+                "GWALOIR(GOOD MORNING": "Madhya Pradesh",
+                "AMARGARH+VARANASI": "Uttar Pradesh",
+                "FARUKH NAGAR": "Haryana",
+                "SITARGANJ": "Uttarakhand",
+                "JAMMU": "Jammu and Kashmir",
+                "SAWAI MADHOPUR": "Rajasthan",
+                "SAMPLA": "Haryana",
+                "GWALOIR(GOOD MORNING)": "Madhya Pradesh",
+                "JASSUR": "Himanchal Pradesh",
+                "THATHARI(J&K)": "Jammu and Kashmir",
+                "BIKANER": "Rajasthan",
+                "IMPHAL": "Manipur",
+                "LUDHIANA TO VEETADAY(SCRAP IRON)": "Punjab",
+                "MEERUT": "Uttar Pradesh",
+                "ASHIYANA": "Uttar Pradesh",
+                "BHORAKALA": "Haryana",
+                "HALDWANI": "Uttarakhand",
+                "POKHRAN": "Rajasthan",
+                "KARIMGANJ+SILCHAR": "Assam",
+                "GHAZIPUR+VARANASI": "Uttar Pradesh",
+                "DAHOD(GUJRAT)": "Gujarat",
+                "FATEHABAD": "Haryana",
+                "VARANASI(24 FIT)": "Uttar Pradesh",
+                "BELTHARA ROAD+AMARGARH": "Uttar Pradesh",
+                "RAJOURI(J&K)": "Jammu and Kashmir",
+                "FARUKHNAGAR": "Haryana",
+                "THATHRI": "Jammu and Kashmir",
+                "SHAMLI(U.P)": "Uttar Pradesh",
+                "MATHURA+TAPUKHERA": "Uttar Pradesh",
+            # More user-specified additions
+            "UNA": "Himachal Pradesh",
+            "KOTDWAR": "Uttarakhand",
+            "DHARUHERA": "Haryana",
+            "DHUBRI": "Assam",
+            "LUMDING": "Assam",
+            "SOLAN": "Himachal Pradesh",
+            "SIKAR": "Rajasthan",
+            "RAJDALESAR": "Rajasthan",
+            "SUMERPUR": "Uttar Pradesh",
+            "GWALIOR": "Madhya Pradesh",  # Already present, but context: good Morning
+            "PAONTA SAHIB": "Himachal Pradesh",
+            "POONCH": "Jammu and Kashmir",
+        # User-specified additions
+        "NORTH LAKHIMPUR": "Uttar Pradesh",
+        "GWALIOR": "Madhya Pradesh",
+        "MORENA": "Madhya Pradesh",
+        "GHAZIYABAD": "Uttar Pradesh",
+        "VEETADAY": "Uttar Pradesh",  # Context: Ghaziyabad to veetaday (role) (6 ton)
+        "REWARI": "Haryana",
+        "ZIRAKPUR": "Punjab",
+        "RUPAIDIHA": "Uttar Pradesh",
+        "JODHPUR": "Rajasthan",
+        "GORAKHPUR": "Uttar Pradesh",
+        "PATAUDI": "Haryana",
+        "NAUTANWA": "Uttar Pradesh",
     # Assam
     "SIVSAGAR": "Assam",
     "SIBSAGAR": "Assam",
@@ -198,8 +256,7 @@ def infer_state(station: str) -> str:
 
     if len(matched_states) == 1:
         return next(iter(matched_states))
-    if len(matched_states) > 1:
-        return "Mixed"
+    # If multiple or no matches, return Unknown
     return "Unknown"
 
 
@@ -420,16 +477,6 @@ if "TRANSPORT NAME" in raw_data.columns:
 else:
     raw_data["TRANSPORT_NAME_NORM"] = ""
 
-with st.expander("Manual Mapping (optional)"):
-    st.caption("Paste one mapping per line: STATION,STATE")
-    mapping_text = st.text_area(
-        "Manual Mapping",
-        value="",
-        placeholder="Example:\nSIVSAGAR,Assam\nSILAPATHAR,Assam",
-        height=160,
-    )
-
-
 def parse_manual_mapping(text: str) -> dict:
     mapping = {}
     for line in text.splitlines():
@@ -439,17 +486,18 @@ def parse_manual_mapping(text: str) -> dict:
         if "," not in line:
             continue
         station, state = line.split(",", 1)
-        station = normalize_station(station)
-        state = state.strip()
-        if station and state:
-            mapping[station] = state
+        # Store both normalized and original for exact match
+        mapping[station.strip()] = state.strip()
+        mapping[normalize_station(station)] = state.strip()
     return mapping
 
-
-manual_mapping = parse_manual_mapping(mapping_text)
+manual_mapping = {}
 
 
 def resolve_state(station: str) -> str:
+    # Check for exact match in manual mapping (original and normalized)
+    if station in manual_mapping:
+        return manual_mapping[station]
     station_key = normalize_station(station)
     if station_key in manual_mapping:
         return manual_mapping[station_key]
@@ -463,9 +511,13 @@ def resolve_state(station: str) -> str:
 
     if len(matched_manual) == 1:
         return next(iter(matched_manual))
-    if len(matched_manual) > 1:
-        return "Mixed"
 
+    # Fuzzy match fallback for unmapped stations
+    city_matches = get_close_matches(station_key, CITY_STATE.keys(), n=1, cutoff=0.8)
+    if city_matches:
+        return CITY_STATE[city_matches[0]]
+
+    # If still not found, fallback to infer_state (keyword search)
     return infer_state(station)
 
 
@@ -482,7 +534,7 @@ st.markdown(
     f"""
     <div class="dashboard-hero">
         <h1>{header_title}</h1>
-        <p>State is inferred from station name keywords. Multi-city stations in different states are marked as Mixed.</p>
+        <p>State is inferred from station name keywords.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -502,88 +554,23 @@ def format_si(value: float, unit: str = "") -> str:
     return f"{value:.0f}{unit}"
 
 st.subheader("Filters")
-filter_row = st.columns([1, 2])
 
-state_options = [s for s in raw_data["STATE"].dropna().unique()]
-state_select = filter_row[0].multiselect(
-    "State",
-    sorted(state_options),
-    default=sorted(state_options),
-)
+# Dropdown (single select) for State
+state_options = sorted([s for s in raw_data["STATE"].dropna().unique()])
+selected_state = st.selectbox("State", ["All"] + state_options, index=0)
 
-transport_base = raw_data
-if state_select:
-    transport_base = transport_base[transport_base["STATE"].isin(state_select)]
-
-transport_display = (
-    transport_base.loc[
-        transport_base["TRANSPORT_NAME_NORM"].astype(bool),
-        ["TRANSPORT_NAME_NORM", "TRANSPORT NAME"],
-    ]
-    .assign(
-        **{
-            "TRANSPORT NAME": lambda df: df["TRANSPORT NAME"].astype(str).str.strip(),
-        }
-    )
-)
-display_counts = (
-    transport_display.groupby(["TRANSPORT_NAME_NORM", "TRANSPORT NAME"])  # type: ignore
-    .size()
-    .reset_index(name="count")
-)
-display_choice = (
-    display_counts.loc[
-        display_counts.groupby("TRANSPORT_NAME_NORM")["count"].idxmax()
-    ]
-    .set_index("TRANSPORT_NAME_NORM")["TRANSPORT NAME"]
-    .to_dict()
-)
-display_frequency = (
-    pd.Series(list(display_choice.values()))
-    .value_counts()
-    .to_dict()
-)
-
-transport_label_map = {}
-for norm, display in display_choice.items():
-    if display_frequency.get(display, 0) > 1:
-        label = f"{display} [{norm}]"
-    else:
-        label = display
-    transport_label_map[label] = norm
-
-transport_options = sorted(transport_label_map.keys())
-
-transport_key = "transport_select"
-if transport_key not in st.session_state:
-    st.session_state[transport_key] = transport_options
-else:
-    st.session_state[transport_key] = [
-        item for item in st.session_state[transport_key] if item in transport_options
-    ]
-
-transport_controls = filter_row[1].columns([1, 1, 3])
-if transport_controls[0].button("Select all"):
-    st.session_state[transport_key] = transport_options
-if transport_controls[1].button("Clear all"):
-    st.session_state[transport_key] = []
-
-transport_multiselect_args = {
-    "label": "Transport Name",
-    "options": transport_options,
-    "key": transport_key,
-}
-if transport_key not in st.session_state:
-    transport_multiselect_args["default"] = transport_options
-
-transport_select = transport_controls[2].multiselect(**transport_multiselect_args)
-
+# Filter data by selected state
 filtered = raw_data.copy()
-if state_select:
-    filtered = filtered[filtered["STATE"].isin(state_select)]
-if transport_select:
-    selected_norms = [transport_label_map[label] for label in transport_select]
-    filtered = filtered[filtered["TRANSPORT_NAME_NORM"].isin(selected_norms)]
+if selected_state != "All":
+    filtered = filtered[filtered["STATE"] == selected_state]
+
+# Dropdown (single select) for Transport Name
+transport_options = sorted(filtered["TRANSPORT NAME"].dropna().unique())
+selected_transport = st.selectbox("Transport Name", ["All"] + transport_options, index=0)
+
+# Filter data by selected transport name
+if selected_transport != "All":
+    filtered = filtered[filtered["TRANSPORT NAME"] == selected_transport]
 
 tab_suffix = f" ({year_label})" if year_label else ""
 overview_tab, state_tab, transport_tab = st.tabs([
@@ -596,8 +583,25 @@ palette_light = px.colors.qualitative.Dark24
 chart_template = "plotly_white"
 
 with overview_tab:
+    # Removed 'Unknown Stations for Mapping' UI as requested
+
     station_unique = filtered["STATION"].dropna().apply(normalize_text).nunique()
     driver_unique = filtered["DRIVER"].dropna().apply(normalize_text).nunique()
+    # Total vehicles: unique vehicle numbers if present, else unique transport names
+    vehicle_col = None
+    for col in filtered.columns:
+        if "VEHICLE" in col.upper():
+            vehicle_col = col
+            break
+    if vehicle_col:
+        # Excel formula COUNTA(UNIQUE(C2,C2:C110)) means count unique non-empty values in the vehicle column
+        vehicle_series = filtered[vehicle_col].dropna().apply(str).str.upper().str.strip()
+        vehicle_series = vehicle_series[vehicle_series != ""]
+        total_vehicles = vehicle_series.nunique()
+    else:
+        total_vehicles = "N/A"
+    # Total trips: count of rows (each row = a trip)
+    total_trips = len(filtered)
 
     summary_state = (
         filtered.groupby("STATE")["FREIGHT"].sum().sort_values(ascending=False)
@@ -615,13 +619,17 @@ with overview_tab:
     bottom_transport = summary_transport.index[-1] if not summary_transport.empty else "N/A"
     bottom_transport_freight = summary_transport.iloc[-1] if not summary_transport.empty else 0
 
-    metric_cols = st.columns(6)
-    metric_cols[0].metric("Total Stations", format_si(station_unique))
-    metric_cols[1].metric("Total Transport Names", format_si(filtered["TRANSPORT NAME"].nunique()))
-    metric_cols[2].metric("Total Drivers", format_si(driver_unique))
-    metric_cols[3].metric("Total Freight", f"₹ {format_si(filtered['FREIGHT'].sum())}")
-    metric_cols[4].metric("Total Advance", f"₹ {format_si(filtered['CASH ADVANCE'].sum())}")
-    metric_cols[5].metric("Total Net Transfer", f"₹ {format_si(filtered['NET TRANSFER'].sum())}")
+    # Clean, grouped metrics layout
+    metric_row1 = st.columns(4)
+    metric_row2 = st.columns(4)
+    metric_row1[0].metric("Stations", format_si(station_unique), help="Unique station count")
+    metric_row1[1].metric("Vehicles", format_si(total_vehicles) if isinstance(total_vehicles, (int, float)) else total_vehicles, help="Unique vehicles (vehicle number only)")
+    metric_row1[2].metric("Trips", format_si(total_trips), help="Total number of trips (rows)")
+    metric_row1[3].metric("Drivers", format_si(driver_unique), help="Unique drivers")
+    metric_row2[0].metric("Transports", format_si(filtered["TRANSPORT NAME"].nunique()), help="Unique transport names")
+    metric_row2[1].metric("Freight", f"₹ {format_si(filtered['FREIGHT'].sum())}", help="Total freight amount")
+    metric_row2[2].metric("Advance", f"₹ {format_si(filtered['CASH ADVANCE'].sum())}", help="Total cash advance")
+    metric_row2[3].metric("Net Transfer", f"₹ {format_si(filtered['NET TRANSFER'].sum())}", help="Total net transfer")
 
     st.divider()
 
@@ -833,22 +841,7 @@ with overview_tab:
         height=420,
     )
 
-    unknown_stations = (
-        raw_data.loc[raw_data["STATE"] == "Unknown", "STATION"]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .drop_duplicates()
-        .sort_values()
-    )
-
-    with st.expander("Unknown Stations for Mapping"):
-        st.caption(f"Unknown stations: {len(unknown_stations)}")
-        st.dataframe(
-            pd.DataFrame({"STATION": unknown_stations}),
-            use_container_width=True,
-            height=320,
-        )
+    # Removed unknown stations expander as requested
 
 with state_tab:
     # Statewise count of transport names
